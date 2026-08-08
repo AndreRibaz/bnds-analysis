@@ -1,11 +1,18 @@
-# 3. Problema de negócio e objetivo do projeto
+# Contexto da base de dados
+Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empresas e órgãos públicos no Brasil. Ela mostra quem pediu o recurso (nome_cliente), onde o projeto será feito (sigla_uf) e para qual setor ele se destina (setor_bndes). Além disso, compara o total aprovado no papel (valor_operacao) com o dinheiro que já foi de fato entregue (valor_desembolsado). Na prática, funciona como um extrato transparente para acompanhar onde o dinheiro do banco está sendo investido.
 
-## 3.1 Qual é o problema de negócio?
+- Base de Operações Não Automática: Concentra grandes projetos de infraestrutura, expansões industriais, financiamentos estruturados e operações estratégicas.
+- devido ao valor elevado, à complexidade técnica ou às exigências do programa, passa por análise e aprovação específica da equipe do BNDES.
+
+
+# 1. Problema de negócio e objetivo do projeto
+
+## 1.1 Qual é o problema de negócio?
 
 - Um gestor financeiro do BNDES precisa melhorar o planejamento da demanda de crédito e a alocação de capital para operações não automáticas. Ele se beneficiaria muito se pudesse prever o valor total contratado (`valor_contratado`) de novos projetos com base no perfil do cliente, localização geográfica e termos do contrato, permitindo otimizar a gestão de liquidez, avaliar riscos e identificar antecipadamente solicitações de crédito fora do padrão.
     
 
-## 3.2 Qual é o contexto?
+## 1.2 Qual é o contexto?
 
 - Quando um banco de desenvolvimento como o BNDES aloca capital para operações financeiras não automáticas, três Indicadores-Chave de Desempenho (KPIs) essenciais devem ser considerados:
     
@@ -18,9 +25,9 @@
 - Esses KPIs ajudam o banco a avaliar a eficácia de suas estratégias de concessão de crédito e a mensurar o impacto financeiro de longo prazo desses investimentos no país.
     
 
-# 4. Escopo do projeto e metadados
+# 2. Escopo do projeto e metadados
 
-## 4.1 Quais são os objetivos específicos do projeto?
+## 2.1 Quais são os objetivos específicos do projeto?
 
 - **i. Construir um Pipeline Robusto de Engenharia de Recursos (_Feature Engineering_):** Transformar dados brutos tratando a assimetria financeira (transformação logarítmica), codificando variáveis categóricas de alta cardinalidade (CNAE/localizações) e criando variáveis derivadas do domínio (ex: razão entre carência e amortização).
     
@@ -29,7 +36,7 @@
 - **iii. Interpretar Previsões e Importância das Variáveis:** Aplicar técnicas de explicabilidade para identificar quais atributos (porte da empresa, setor ou localização) exercem maior influência no valor contratado estimado.
     
 
-## 4.2 Metadados e Fontes de Dados
+## 2.2 Metadados e Fontes de Dados
 
 - **Autor:** André Cicco Ribas
     
