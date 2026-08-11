@@ -3,7 +3,7 @@ Módulo: silver.py
 Descrição: Pipeline de transformação e enriquecimento de dados da camada Silver.
 Autor: Andre Ribas
 Data: 2026-08-11
-Versão: 1.3
+Versão: 1.4
 
 Este módulo implementa o processo de transformação dos dados da camada Bronze 
 para a camada Silver, incluindo:
@@ -13,8 +13,10 @@ para a camada Silver, incluindo:
 - Feature Engineering
 - Validação de integridade dos dados
 
+=======================
+- Como utilizar:
+=======================
 
-Como utilizar:
 DIRETO:
 python src/silver.py
 
@@ -29,7 +31,11 @@ df = pipeline.run_pipeline()
 pipeline = SilverDataPipeline(output_filename=meu_arquivo.parquet)
 df = pipeline.run_pipeline()
 
+=====================
+- Visão Geral
+=====================
 
+Bronze (CSV) → Silver (Parquet) → Enriquecimento → Validação → bnds_silver.parquet
 ../data/
 ├── bronze/
 │   ├── br_bd_diretorios_brasil_cnae_2.csv
