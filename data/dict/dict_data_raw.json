@@ -257,12 +257,5 @@
     "type": "STRING",
     "description": "Situação do contrato",
     "fields": []
-  },
-  {
-    "name": "ano",
-    "mode": "",
-    "type": "INTEGER",
-    "description": "Ano da contratação da operação.",
-    "fields": []
   }
 ]
