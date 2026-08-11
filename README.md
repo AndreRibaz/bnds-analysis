@@ -29,7 +29,7 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 
 ## 2.1 Quais são os objetivos específicos do projeto?
 
-- **i. Construir um Pipeline Robusto de Engenharia de Recursos (_Feature Engineering_):** Transformar dados brutos tratando a assimetria financeira (transformação logarítmica), codificando variáveis categóricas de alta cardinalidade (CNAE/localizações) e criando variáveis derivadas do domínio (ex: razão entre carência e amortização).
+- **i. Construir um Pipeline de Engenharia de Recursos (_Feature Engineering_):** Transformar dados brutos tratando a assimetria financeira (transformação logarítmica), codificando variáveis categóricas de alta cardinalidade (CNAE/localizações) e criando variáveis derivadas do domínio (ex: razão entre carência e amortização).
     
 - **ii. Treinar e Comparar Modelos de Regressão:** Construir e avaliar modelos lineares baseline (Ridge/Lasso) contra algoritmos baseados em árvores (Random Forest/LightGBM) utilizando métricas de avaliação como $MAE$, $RMSE$ e $R^2$.
     
@@ -38,7 +38,7 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 
 ## 2.2 Metadados e Fontes de Dados
 
-- **Autor:** André Cicco Ribas
+- **Autor:** André Felipe Cicco Ribas
     
 - **Data:** Agosto de 2026
     
