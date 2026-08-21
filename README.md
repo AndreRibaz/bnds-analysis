@@ -67,4 +67,29 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 
 1. **Modelagem de Regressão:** Treinar e comparar um modelo baseline (Regressão Ridge/Lasso) contra um modelo de árvores (Random Forest/LightGBM), avaliando por $MAE$, $RMSE$ e $R^2$.
     
-2. **Explicabilidade:** Mapear e interpretar a importância de cada variável na estimativa do crédito.
+2. **Explicabilidade:** Mapear e interpretar a importância de cada variável na estimativa do crédito. (Inferência) Se f^ é uma estimativa de f podemos responder as seguintes perguntas sobre f: quais features são as mais importantes? há evidencias que f é linear?
+
+
+
+prompt
+
+Contexto do projeto academico:
+- Um gestor financeiro do BNDES precisa melhorar o planejamento da demanda de crédito e a alocação de capital para operações não automáticas. Ele se beneficiaria muito se pudesse prever o valor total contratado (`valor_contratado`) de novos projetos com base no perfil do cliente, localização geográfica e termos do contrato, permitindo otimizar a gestão de liquidez, avaliar riscos e identificar antecipadamente solicitações de crédito fora do padrão.
+
+1. Análise Exploratória de Dados (EDA) utilizando fundamentos da estátistica descritiva, vamos resumir as principais características de um conjunto de dados.
+- Decidir que metodo utilizar na base metodo paramétricos ou não-parametricos
+-verificar p-value
+-verificar IC
+-verificar destribuição dos dados
+-verificar correlações
+-R-squared
+- Least Squares 
+-IQR e Mediana
+-MAD e STD uma analise para o conjunto dos dados
+
+2. Explicabilidade Mapear e interpretar a importância de cada variável na estimativa do crédito. (Inferência) Se f^ é uma estimativa de f podemos responder as seguintes perguntas sobre f: quais features são as mais importantes? há evidencias que f é linear?
+
+utilizando um arquivo .ipynb.
+
+Vamos iniciar realizando uma simples e consistente EDA.
+

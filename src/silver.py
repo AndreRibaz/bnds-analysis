@@ -1,662 +1,1220 @@
-"""
-Módulo: silver.py
-Descrição: Pipeline de transformação e enriquecimento de dados da camada Silver.
-Autor: Andre Ribas
-Data: 2026-08-11
-Versão: 1.4
-
-Este módulo implementa o processo de transformação dos dados da camada Bronze 
-para a camada Silver, incluindo:
-- Conversão CSV para Parquet
-- Tratamento de valores nulos
-- Padronização de textos
-- Feature Engineering
-- Validação de integridade dos dados
-
-=======================
-- Como utilizar:
-=======================
-
-DIRETO:
-python src/silver.py
-
-PROGRAMADO:
-from src.silver import SilverDataPipeline
-
-# Usando o nome padrão
-pipeline = SilverDataPipeline()
-df = pipeline.run_pipeline()
-
-# Especificando um nome diferente
-pipeline = SilverDataPipeline(output_filename=meu_arquivo.parquet)
-df = pipeline.run_pipeline()
-
-=====================
-- Visão Geral
-=====================
-
-Bronze (CSV) → Silver (Parquet) → Enriquecimento → Validação → bnds_silver.parquet
-../data/
-├── bronze/
-│   ├── br_bd_diretorios_brasil_cnae_2.csv
-│   ├── br_bd_diretorios_brasil_municipio.csv
-│   └── br_bndes_operacoes_contratadas_operacoes_nao_automaticas.csv
-└── silver/
-    ├── br_bd_diretorios_brasil_cnae_2.parquet      # Conversão intermediária
-    ├── br_bd_diretorios_brasil_municipio.parquet   # Conversão intermediária
-    ├── br_bndes_operacoes_contratadas_operacoes_nao_automaticas.parquet  # Conversão intermediária
-    └── bnds_silver.parquet                         # ✅ ARQUIVO FINAL PROCESSADO
-
-"""
-
-import os
-import re
-import unicodedata
-import sys
-import pandas as pd
-import numpy as np
-from typing import List, Optional, Union, Dict, Any
-import logging
-from pathlib import Path
-from datetime import datetime
-
-# Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-
-class SilverDataPipeline:
-    """
-    Classe responsável pelo pipeline de transformação de dados da camada Silver.
-    
-    Esta classe encapsula todas as etapas de processamento necessárias para
-    transformar dados brutos (camada Bronze) em dados enriquecidos e tratados
-    (camada Silver), seguindo as melhores práticas de engenharia de dados.
-    
-    Attributes:
-        bronze_dir (str): Caminho para o diretório de dados Bronze
-        silver_dir (str): Caminho para o diretório de dados Silver
-        output_filename (str): Nome do arquivo de saída
-        df (pd.DataFrame): DataFrame principal das operações
-    """
-    
-    def __init__(self, bronze_dir: Optional[str] = None, 
-                 silver_dir: Optional[str] = None,
-                 output_filename: str = "bnds_silver.parquet"):
-        """
-        Inicializa o pipeline com os diretórios de dados.
-        
-        Args:
-            bronze_dir (str): Diretório de dados Bronze
-            silver_dir (str): Diretório de dados Silver
-            output_filename (str): Nome do arquivo Parquet de saída
-        """
-        # Determina o diretório base do projeto
-        self.base_dir = self._get_project_root()
-        
-        # Define os diretórios de dados
-        if bronze_dir is None:
-            self.bronze_dir = os.path.join(self.base_dir, "data", "bronze")
-        else:
-            self.bronze_dir = bronze_dir
-            
-        if silver_dir is None:
-            self.silver_dir = os.path.join(self.base_dir, "data", "silver")
-        else:
-            self.silver_dir = silver_dir
-            
-        self.output_filename = output_filename
-        self.df = None
-        
-        self._validate_directories()
-        logger.info(f"Pipeline inicializado - Bronze: {self.bronze_dir}, Silver: {self.silver_dir}")
-        logger.info(f"Arquivo de saída: {output_filename}")
-    
-    def _get_project_root(self) -> str:
-        """
-        Determina o diretório raiz do projeto.
-        
-        Returns:
-            str: Caminho absoluto para o diretório raiz
-        """
-        # Obtém o diretório do script atual
-        script_path = Path(__file__).resolve()
-        
-        # Se estiver em src/, sobe um nível
-        if script_path.parent.name == "src":
-            root = script_path.parent.parent
-        else:
-            # Caso contrário, tenta encontrar pela estrutura comum
-            root = script_path.parent
-        
-        # Verifica se existe o diretório data
-        if not (root / "data").exists():
-            # Tenta subir mais um nível
-            parent = root.parent
-            if (parent / "data").exists():
-                root = parent
-        
-        logger.info(f"Diretório raiz do projeto: {root}")
-        return str(root)
-    
-    def _validate_directories(self) -> None:
-        """Valida se os diretórios de dados existem."""
-        for directory in [self.bronze_dir, self.silver_dir]:
-            if not os.path.exists(directory):
-                try:
-                    os.makedirs(directory, exist_ok=True)
-                    logger.warning(f"Diretório criado: {directory}")
-                except Exception as e:
-                    logger.error(f"Erro ao criar diretório {directory}: {str(e)}")
-                    raise
-    
-    def list_bronze_files(self) -> List[str]:
-        """
-        Lista todos os arquivos disponíveis no diretório Bronze.
-        
-        Returns:
-            List[str]: Lista de nomes de arquivos no diretório Bronze
-        """
-        try:
-            files = [f for f in os.listdir(self.bronze_dir) 
-                    if os.path.isfile(os.path.join(self.bronze_dir, f))]
-            
-            # Filtra apenas arquivos CSV
-            csv_files = [f for f in files if f.endswith('.csv')]
-            
-            if csv_files:
-                logger.info(f"Encontrados {len(csv_files)} arquivos CSV no diretório Bronze")
-            else:
-                logger.warning(f"Nenhum arquivo CSV encontrado em {self.bronze_dir}")
-                logger.info(f"Arquivos encontrados: {files}")
-                
-            return csv_files
-            
-        except FileNotFoundError:
-            logger.error(f"Diretório Bronze não encontrado: {self.bronze_dir}")
-            return []
-        except Exception as e:
-            logger.error(f"Erro ao listar arquivos Bronze: {str(e)}")
-            return []
-    
-    def convert_csv_to_parquet(self, file_list: List[str]) -> None:
-        """
-        Converte uma lista de arquivos CSV para formato Parquet.
-        
-        Args:
-            file_list (List[str]): Lista de nomes de arquivos CSV para converter
-        """
-        if not file_list:
-            logger.warning("Nenhum arquivo CSV para converter")
-            return
-            
-        for arquivo in file_list:
-            try:
-                input_path = os.path.join(self.bronze_dir, arquivo)
-                output_filename = os.path.splitext(arquivo)[0] + '.parquet'
-                output_path = os.path.join(self.silver_dir, output_filename)
-                
-                # Verifica se o arquivo já foi convertido
-                if os.path.exists(output_path):
-                    logger.info(f"Arquivo {output_filename} já existe, pulando conversão")
-                    continue
-                
-                # Leitura do CSV
-                logger.info(f"Lendo arquivo: {arquivo}")
-                df = pd.read_csv(input_path, low_memory=False)
-                logger.info(f"Arquivo {arquivo} lido - {len(df)} linhas, {len(df.columns)} colunas")
-                
-                # Salvamento como Parquet
-                df.to_parquet(output_path, index=False)
-                logger.info(f"Arquivo convertido: {arquivo} -> {output_filename}")
-                
-            except Exception as e:
-                logger.error(f"Erro ao converter {arquivo}: {str(e)}")
-                raise
-    
-    def load_silver_data(self, filename: str) -> pd.DataFrame:
-        """
-        Carrega um arquivo Parquet da camada Silver.
-        
-        Args:
-            filename (str): Nome do arquivo Parquet
-            
-        Returns:
-            pd.DataFrame: DataFrame carregado
-        """
-        filepath = os.path.join(self.silver_dir, filename)
-        
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Arquivo não encontrado: {filepath}")
-        
-        self.df = pd.read_parquet(filepath)
-        logger.info(f"Dados carregados: {filename} - {len(self.df)} linhas, {len(self.df.columns)} colunas")
-        return self.df
-    
-    def check_null_values(self, df: pd.DataFrame) -> Union[bool, pd.DataFrame]:
-        """
-        Verifica valores nulos no DataFrame e retorna análise detalhada.
-        
-        Args:
-            df (pd.DataFrame): DataFrame a ser verificado
-            
-        Returns:
-            Union[bool, pd.DataFrame]: False se não houver nulos, 
-                                      DataFrame com análise se houver
-        """
-        total_nulos = df.isnull().sum().sort_values(ascending=False)
-        total_nulos = total_nulos[total_nulos > 0]
-        
-        if total_nulos.empty:
-            logger.info("Nenhum valor nulo encontrado")
-            return False
-        
-        nulos_percent = ((total_nulos / df.shape[0]) * 100).round(2)
-        resultado = pd.DataFrame({
-            'Total_Nulos': total_nulos, 
-            'Percentual_%': nulos_percent
-        })
-        
-        logger.info(f"Valores nulos encontrados em {len(resultado)} colunas")
-        return resultado
-    
-    def treat_null_values(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Aplica tratamento de valores nulos conforme regras de negócio.
-        
-        Regras de negócio implementadas:
-        1. tipo_excepcionalidade: Valores nulos indicam operação padrão (0)
-        2. Instituição financeira: Nulo indica operação direta com BNDES
-        3. id_municipio: Nulo preenchido como "NÃO INFORMADO"
-        4. cnpj_cliente: Nulo preenchido com zeros
-        5. situacao_contrato: Nulo preenchido como "OUTROS"
-        6. tipo_fonte_recursos: Nulo preenchido como "OUTROS"
-        
-        Args:
-            df (pd.DataFrame): DataFrame para tratamento
-            
-        Returns:
-            pd.DataFrame: DataFrame com valores nulos tratados
-        """
-        df_copy = df.copy()
-        
-        # 1. Tratamento de excepcionalidade
-        if 'tipo_excepcionalidade' in df_copy.columns:
-            df_copy["tem_excepcionalidade"] = df_copy["tipo_excepcionalidade"].notna().astype(int)
-            df_copy = df_copy.drop(columns=["tipo_excepcionalidade"])
-            logger.info("Coluna 'tem_excepcionalidade' criada")
-        
-        # 2. Tratamento de instituição financeira
-        if 'cnpj_instituicao_financeira_credenciada' in df_copy.columns:
-            df_copy["cnpj_instituicao_financeira_credenciada"] = \
-                df_copy["cnpj_instituicao_financeira_credenciada"].fillna("0000000000000.0")
-        if 'nome_instituicao_financeira_credenciada' in df_copy.columns:
-            df_copy["nome_instituicao_financeira_credenciada"] = \
-                df_copy["nome_instituicao_financeira_credenciada"].fillna("OPERAÇÃO DIRETA")
-        logger.info("Instituições financeiras preenchidas para operações diretas")
-        
-        # 3. Tratamento de campos de localização
-        if 'id_municipio' in df_copy.columns:
-            df_copy["id_municipio"] = df_copy["id_municipio"].fillna("NÃO INFORMADO")
-        
-        # 4. Tratamento de CNPJ do cliente
-        if 'cnpj_cliente' in df_copy.columns:
-            df_copy["cnpj_cliente"] = df_copy["cnpj_cliente"].fillna("000000000000.0")
-        
-        # 5. Tratamento de situação e fonte de recursos
-        if 'situacao_contrato' in df_copy.columns:
-            df_copy["situacao_contrato"] = df_copy["situacao_contrato"].fillna("OUTROS")
-        if 'tipo_fonte_recursos' in df_copy.columns:
-            df_copy["tipo_fonte_recursos"] = df_copy["tipo_fonte_recursos"].fillna("OUTROS")
-        
-        # 6. Remoção de colunas CNAE desnecessárias
-        cnae_cols = ["classe_cnae", "subclasse_cnae", "grupo_cnae", 
-                    "divisao_cnae", "secao_cnae"]
-        cnae_cols_existentes = [col for col in cnae_cols if col in df_copy.columns]
-        if cnae_cols_existentes:
-            df_copy = df_copy.drop(columns=cnae_cols_existentes)
-            logger.info(f"Colunas CNAE removidas: {cnae_cols_existentes}")
-        
-        logger.info("Tratamento de valores nulos concluído")
-        return df_copy
-    
-    @staticmethod
-    def normalize_text(value: Union[str, float, None]) -> Optional[str]:
-        """
-        Normaliza texto removendo acentos e convertendo para maiúsculas.
-        
-        Args:
-            value: Valor a ser normalizado
-            
-        Returns:
-            Optional[str]: Texto normalizado ou None se entrada for nula
-        """
-        if pd.isna(value):
-            return value
-        
-        text = str(value).strip().upper()
-        text = unicodedata.normalize("NFKD", text)
-        text = "".join(ch for ch in text if not unicodedata.combining(ch))
-        text = re.sub(r"\s+", " ", text)
-        return text
-    
-    def standardize_text(self, df: pd.DataFrame, 
-                        cols: Optional[List[str]] = None) -> pd.DataFrame:
-        """
-        Padroniza colunas de texto com normalização.
-        
-        Args:
-            df (pd.DataFrame): DataFrame a ser processado
-            cols (Optional[List[str]]): Colunas a processar
-            
-        Returns:
-            pd.DataFrame: DataFrame com texto padronizado
-        """
-        df_copy = df.copy()
-        
-        if cols is None:
-            cols = df_copy.select_dtypes(include=["object", "string"]).columns.tolist()
-        
-        for col in cols:
-            df_copy[col] = df_copy[col].map(self.normalize_text)
-        
-        logger.info(f"Textos padronizados em {len(cols)} colunas")
-        return df_copy
-    
-    def convert_date_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Converte colunas de data para tipo datetime.
-        
-        Args:
-            df (pd.DataFrame): DataFrame para conversão
-            
-        Returns:
-            pd.DataFrame: DataFrame com datas convertidas
-        """
-        df_copy = df.copy()
-        date_pattern = "data"
-        date_cols = [col for col in df_copy.columns if date_pattern in col.lower()]
-        
-        for col in date_cols:
-            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce')
-        
-        if date_cols:
-            logger.info(f"Colunas de data convertidas: {date_cols}")
-        return df_copy
-    
-    def apply_feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Aplica feature engineering para enriquecimento dos dados.
-        
-        Features criadas:
-        1. ano_contratacao: Ano da contratação
-        2. mes_contratacao: Mês da contratação
-        3. prazo_total_meses: Soma do prazo de carência e amortização
-        4. grupo_taxa_juros: Categorização da taxa (BAIXA, MEDIA, ALTA)
-        5. grupo_taxa_juros_ordinal: Codificação ordinal da taxa
-        6. flag_apoio_direto: Indicador de apoio direto (1/0)
-        7. flag_reembolsavel: Indicador de modalidade reembolsável (1/0)
-        8. flag_cliente_publico: Indicador de cliente público (1/0)
-        9. qtd_palavras_descricao: Quantidade de palavras na descrição
-        10. porte_cliente_ordinal: Codificação ordinal do porte
-        
-        Args:
-            df (pd.DataFrame): DataFrame para enriquecimento
-            
-        Returns:
-            pd.DataFrame: DataFrame com features enriquecidas
-        """
-        df_copy = df.copy()
-        
-        # 1. Extração temporal
-        if 'data_contratacao' in df_copy.columns:
-            df_copy["ano_contratacao"] = df_copy["data_contratacao"].dt.year
-            df_copy["mes_contratacao"] = df_copy["data_contratacao"].dt.month
-        
-        # 2. Cálculo de prazo
-        if 'prazo_carencia' in df_copy.columns and 'prazo_amortizacao' in df_copy.columns:
-            df_copy["prazo_total_meses"] = (df_copy["prazo_carencia"].fillna(0) + 
-                                           df_copy["prazo_amortizacao"].fillna(0))
-        
-        # 3. Categorização de taxa de juros
-        if 'taxa_juros' in df_copy.columns:
-            conditions = [
-                df_copy["taxa_juros"] < 5,
-                (df_copy["taxa_juros"] >= 5) & (df_copy["taxa_juros"] <= 10),
-                df_copy["taxa_juros"] > 10,
-            ]
-            categories = ["BAIXA", "MEDIA", "ALTA"]
-            df_copy["grupo_taxa_juros"] = np.select(
-                conditions, categories, default="SEM TAXA"
-            )
-            
-            # 4. Codificação ordinal da taxa
-            taxa_mapping = {"SEM TAXA": 0, "BAIXA": 1, "MEDIA": 2, "ALTA": 3}
-            df_copy["grupo_taxa_juros_ordinal"] = df_copy["grupo_taxa_juros"].map(taxa_mapping)
-        
-        # 5. Flags binárias
-        if 'forma_apoio' in df_copy.columns:
-            df_copy["flag_apoio_direto"] = (df_copy["forma_apoio"] == "DIRETA").astype(int)
-        if 'modalidade_apoio' in df_copy.columns:
-            df_copy["flag_reembolsavel"] = (df_copy["modalidade_apoio"] == "REEMBOLSAVEL").astype(int)
-        
-        # 6. Flag cliente público
-        if 'natureza_cliente' in df_copy.columns:
-            public_pattern = "PUBLICA|PUBLICO"
-            df_copy["flag_cliente_publico"] = (
-                df_copy["natureza_cliente"]
-                .fillna("")
-                .str.contains(public_pattern, regex=True)
-                .astype(int)
-            )
-        
-        # 7. Quantidade de palavras
-        if 'descricao_projeto' in df_copy.columns:
-            df_copy["qtd_palavras_descricao"] = (
-                df_copy["descricao_projeto"]
-                .fillna("")
-                .str.split()
-                .str.len()
-            )
-        
-        # 8. Codificação ordinal do porte
-        if 'porte_cliente' in df_copy.columns:
-            porte_mapping = {
-                "SEM PORTE": 0, "MICRO": 1, "PEQUENA": 2, 
-                "MEDIA": 3, "GRANDE": 4
-            }
-            df_copy["porte_cliente_ordinal"] = df_copy["porte_cliente"].map(porte_mapping)
-        
-        logger.info("Feature Engineering concluído")
-        return df_copy
-    
-    def validate_data_integrity(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Valida a integridade dos dados processados.
-        
-        Args:
-            df (pd.DataFrame): DataFrame a validar
-            
-        Returns:
-            Dict[str, Any]: Dicionário com métricas de validação
-        """
-        validation_results = {
-            "total_linhas": len(df),
-            "total_colunas": len(df.columns),
-            "valores_ausentes": df.isnull().sum().sum(),
-            "linhas_duplicadas": df.duplicated().sum(),
-        }
-        
-        # Validação de integridade financeira
-        if 'valor_contratado' in df.columns and 'valor_desembolsado' in df.columns:
-            valor_total_contratado = df["valor_contratado"].sum()
-            valor_total_desembolsado = df["valor_desembolsado"].sum()
-            
-            validation_results.update({
-                "valor_total_contratado": f"R$ {valor_total_contratado:,.2f}",
-                "valor_total_desembolsado": f"R$ {valor_total_desembolsado:,.2f}",
-                "taxa_execucao": f"{(valor_total_desembolsado/valor_total_contratado*100):.2f}%"
-            })
-        
-        logger.info(f"Validação de integridade concluída - {len(df)} registros")
-        return validation_results
-    
-    def save_final_dataframe(self, df: pd.DataFrame) -> str:
-        """
-        Salva o DataFrame processado no formato Parquet.
-        
-        Args:
-            df (pd.DataFrame): DataFrame a ser salvo
-            
-        Returns:
-            str: Caminho do arquivo salvo
-        """
-        output_path = os.path.join(self.silver_dir, self.output_filename)
-        df.to_parquet(output_path, index=False)
-        logger.info(f"Dados processados salvos em: {output_path}")
-        return output_path
-    
-    def run_pipeline(self, filename: Optional[str] = None) -> pd.DataFrame:
-        """
-        Executa o pipeline completo de transformação de dados.
-        
-        Args:
-            filename (Optional[str]): Nome específico do arquivo a processar
-            
-        Returns:
-            pd.DataFrame: DataFrame processado da camada Silver
-        """
-        try:
-            # 1. Listar e converter arquivos
-            bronze_files = self.list_bronze_files()
-            
-            if not bronze_files:
-                logger.error("Nenhum arquivo CSV encontrado no diretório Bronze")
-                logger.info(f"Verifique se os arquivos estão em: {self.bronze_dir}")
-                return pd.DataFrame()
-            
-            # Converte arquivos CSV para Parquet
-            self.convert_csv_to_parquet(bronze_files)
-            
-            # 2. Encontrar o arquivo de operações
-            if filename is None:
-                # Padrões para encontrar o arquivo de operações
-                patterns = ["operacoes_contratadas", "bndes_operacoes"]
-                silver_files = [f for f in os.listdir(self.silver_dir) 
-                               if f.endswith('.parquet')]
-                
-                filename = None
-                for pattern in patterns:
-                    matching = [f for f in silver_files if pattern in f]
-                    if matching:
-                        filename = matching[0]
-                        break
-                
-                if filename is None and silver_files:
-                    # Usar o primeiro arquivo disponível
-                    filename = silver_files[0]
-                
-                if filename is None:
-                    # Tentar usar o nome original do CSV
-                    csv_files = [f for f in bronze_files if "operacoes" in f]
-                    if csv_files:
-                        filename = csv_files[0].replace('.csv', '.parquet')
-            
-            if filename is None:
-                logger.error("Não foi possível encontrar o arquivo de operações")
-                return pd.DataFrame()
-            
-            # 3. Processar dados
-            logger.info(f"Processando arquivo: {filename}")
-            self.df = self.load_silver_data(filename)
-            
-            # 4. Verificar e tratar nulos
-            null_analysis = self.check_null_values(self.df)
-            if null_analysis is not False:
-                logger.info(f"Análise de nulos:\n{null_analysis}")
-                self.df = self.treat_null_values(self.df)
-            
-            # 5. Conversão de datas
-            self.df = self.convert_date_columns(self.df)
-            
-            # 6. Padronização de textos
-            self.df = self.standardize_text(self.df)
-            
-            # 7. Feature Engineering
-            self.df = self.apply_feature_engineering(self.df)
-            
-            # 8. Validação final
-            validation = self.validate_data_integrity(self.df)
-            logger.info(f"Métricas finais:\n{validation}")
-            
-            # 9. Salvar dados processados
-            output_path = self.save_final_dataframe(self.df)
-            
-            logger.info(f"Pipeline concluído com sucesso - Arquivo salvo em: {output_path}")
-            return self.df
-            
-        except Exception as e:
-            logger.error(f"Erro durante execução do pipeline: {str(e)}")
-            raise
-
-
-def main():
-    """
-    Função principal para execução do pipeline.
-    """
-    # Inicializa o pipeline com o nome do arquivo de saída desejado
-    pipeline = SilverDataPipeline(output_filename="bnds_silver.parquet")
-    
-    logger.info("Iniciando pipeline de transformação Silver...")
-    
-    try:
-        result_df = pipeline.run_pipeline()
-        
-        if result_df.empty:
-            print("\n❌ Nenhum dado foi processado. Verifique os arquivos na pasta data/bronze/")
-            return
-        
-        # Sumário final
-        print("\n" + "="*60)
-        print("RESUMO DA TRANSFORMAÇÃO SILVER")
-        print("="*60)
-        print(f"Arquivo gerado: bnds_silver.parquet")
-        print(f"Localização: {pipeline.silver_dir}/bnds_silver.parquet")
-        print(f"Total de registros: {len(result_df):,}")
-        print(f"Total de colunas: {len(result_df.columns)}")
-        
-        if 'valor_contratado' in result_df.columns:
-            total = result_df['valor_contratado'].sum()
-            print(f"Valor total contratado: R$ {total:,.2f}")
-        
-        if 'valor_desembolsado' in result_df.columns:
-            total_desemb = result_df['valor_desembolsado'].sum()
-            print(f"Valor total desembolsado: R$ {total_desemb:,.2f}")
-        
-        if 'data_contratacao' in result_df.columns:
-            min_date = result_df['data_contratacao'].min()
-            max_date = result_df['data_contratacao'].max()
-            if pd.notna(min_date) and pd.notna(max_date):
-                print(f"Período: {min_date.date()} a {max_date.date()}")
-        
-        # Verificar colunas criadas pelo feature engineering
-        feature_cols = ['ano_contratacao', 'mes_contratacao', 'prazo_total_meses', 
-                       'grupo_taxa_juros', 'flag_apoio_direto', 'flag_reembolsavel',
-                       'flag_cliente_publico', 'qtd_palavras_descricao', 
-                       'porte_cliente_ordinal']
-        features_criadas = [col for col in feature_cols if col in result_df.columns]
-        print(f"Features criadas: {len(features_criadas)}")
-        
-        
-    except Exception as e:
-        logger.error(f"Falha no pipeline: {str(e)}")
-        print(f"\n❌ Erro durante execução: {str(e)}")
-        raise
-
-
-if __name__ == "__main__":
-    main()
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 175,
+   "id": "64b87012",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import re\n",
+    "import unicodedata\n",
+    "import os\n",
+    "import duckdb"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a1542ff3",
+   "metadata": {},
+   "source": [
+    "#### Leitura & transformação"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 176,
+   "id": "c85d7a16",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Definindo a estrutura de caminhos relativos do projeto\n",
+    "BRONZE_DIR = \"../data/bronze\"\n",
+    "SILVER_DIR = \"../data/silver\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 177,
+   "id": "efdddd47",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def ler_nomes_arquivos_bronze():\n",
+    "    \"\"\"\n",
+    "    Lê os nomes dos arquivos na pasta bronze e retorna uma lista de nomes de arquivos.\n",
+    "    \"\"\"\n",
+    "    return [f for f in os.listdir(BRONZE_DIR) if os.path.isfile(os.path.join(BRONZE_DIR, f))]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 178,
+   "id": "0fcbed37",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "lista_arquivos = ler_nomes_arquivos_bronze()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 179,
+   "id": "b167c30a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def transformar_csv_para_parquet(lista_arquivos):\n",
+    "    \"\"\"\n",
+    "    Função para transformar um arquivo CSV em Parquet.\n",
+    "    \n",
+    "    Parâmetros:\n",
+    "    lista_arquivos (list): Lista de nomes dos arquivos CSV de entrada.\n",
+    "    \"\"\"\n",
+    "\n",
+    "    for arquivo in lista_arquivos:\n",
+    "        # Lendo o arquivo CSV\n",
+    "        df = pd.read_csv(os.path.join(BRONZE_DIR, arquivo))\n",
+    "        \n",
+    "        # Definindo o nome do arquivo Parquet de saída\n",
+    "        nome_arquivo_parquet = os.path.splitext(arquivo)[0] + '.parquet'\n",
+    "        \n",
+    "        # Salvando o DataFrame como Parquet\n",
+    "        df.to_parquet(os.path.join(SILVER_DIR, nome_arquivo_parquet), index=False)\n",
+    "        \n",
+    "        print(f\"Arquivo {arquivo} transformado e salvo em data/silver\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 180,
+   "id": "3bb8a98f",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Arquivo br_bd_diretorios_brasil_cnae_2.csv transformado e salvo em data/silver\n",
+      "Arquivo br_bd_diretorios_brasil_municipio.csv transformado e salvo em data/silver\n",
+      "Arquivo br_bndes_operacoes_contratadas_operacoes_nao_automaticas.csv transformado e salvo em data/silver\n"
+     ]
+    }
+   ],
+   "source": [
+    "transformar_csv_para_parquet(lista_arquivos)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 181,
+   "id": "e71334b6",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['br_bd_diretorios_brasil_cnae_2.parquet',\n",
+       " 'br_bd_diretorios_brasil_municipio.parquet',\n",
+       " 'br_bndes_operacoes_contratadas_operacoes_nao_automaticas.parquet']"
+      ]
+     },
+     "execution_count": 181,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "def ler_nomes_arquivos_silver():\n",
+    "    \"\"\"\n",
+    "    Lê os nomes dos arquivos na pasta silver e retorna uma lista de nomes de arquivos.\n",
+    "    \"\"\"\n",
+    "    return [f for f in os.listdir(SILVER_DIR) if os.path.isfile(os.path.join(SILVER_DIR, f))]\n",
+    "\n",
+    "ler_nomes_arquivos_silver()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 182,
+   "id": "16799ece",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "<class 'pandas.DataFrame'>\n",
+      "RangeIndex: 23483 entries, 0 to 23482\n",
+      "Data columns (total 39 columns):\n",
+      " #   Column                                   Non-Null Count  Dtype  \n",
+      "---  ------                                   --------------  -----  \n",
+      " 0   razao_social_cliente                     23483 non-null  str    \n",
+      " 1   cnpj_cliente                             23474 non-null  float64\n",
+      " 2   descricao_projeto                        23483 non-null  str    \n",
+      " 3   sigla_uf                                 23483 non-null  str    \n",
+      " 4   nome_municipio                           23483 non-null  str    \n",
+      " 5   id_municipio                             15762 non-null  float64\n",
+      " 6   id_contrato                              23483 non-null  int64  \n",
+      " 7   data_contratacao                         23483 non-null  str    \n",
+      " 8   valor_contratado                         23483 non-null  float64\n",
+      " 9   valor_desembolsado                       23483 non-null  float64\n",
+      " 10  tipo_fonte_recursos                      22647 non-null  str    \n",
+      " 11  custo_financeiro                         23483 non-null  str    \n",
+      " 12  taxa_juros                               23483 non-null  float64\n",
+      " 13  prazo_carencia                           23483 non-null  int64  \n",
+      " 14  prazo_amortizacao                        23483 non-null  int64  \n",
+      " 15  modalidade_apoio                         23483 non-null  str    \n",
+      " 16  forma_apoio                              23483 non-null  str    \n",
+      " 17  produto                                  23483 non-null  str    \n",
+      " 18  tipo_instrumento_financeiro              23483 non-null  str    \n",
+      " 19  indicador_inovacao                       23483 non-null  int64  \n",
+      " 20  area_operacional_bndes                   23483 non-null  str    \n",
+      " 21  setor_cnae_bndes                         23483 non-null  str    \n",
+      " 22  subsetor_agrupado_cnae_bndes             23483 non-null  str    \n",
+      " 23  descricao_subclasse                      23483 non-null  str    \n",
+      " 24  setor_bndes                              23483 non-null  str    \n",
+      " 25  subsetor_bndes                           23483 non-null  str    \n",
+      " 26  porte_cliente                            23483 non-null  str    \n",
+      " 27  natureza_cliente                         23483 non-null  str    \n",
+      " 28  nome_instituicao_financeira_credenciada  4071 non-null   str    \n",
+      " 29  cnpj_instituicao_financeira_credenciada  4071 non-null   float64\n",
+      " 30  tipo_garantia                            23483 non-null  str    \n",
+      " 31  tipo_excepcionalidade                    218 non-null    str    \n",
+      " 32  situacao_contrato                        23215 non-null  str    \n",
+      " 33  secao_cnae                               23483 non-null  str    \n",
+      " 34  divisao_cnae                             23483 non-null  int64  \n",
+      " 35  grupo_cnae                               23228 non-null  float64\n",
+      " 36  classe_cnae                              22986 non-null  float64\n",
+      " 37  subclasse_cnae                           17976 non-null  float64\n",
+      " 38  data_apuracao                            23483 non-null  str    \n",
+      "dtypes: float64(9), int64(5), str(25)\n",
+      "memory usage: 20.3 MB\n"
+     ]
+    }
+   ],
+   "source": [
+    "operacoes = pd.read_parquet(os.path.join(SILVER_DIR, 'br_bndes_operacoes_contratadas_operacoes_nao_automaticas.parquet'))\n",
+    "\n",
+    "operacoes.info()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7f3c50ec",
+   "metadata": {},
+   "source": [
+    "#### Tratamento de valores nulos"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 183,
+   "id": "6444b9aa",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def verificar_valores_nulos(df):\n",
+    "    \"\"\"Verifica se um DataFrame contém valores nulos.\n",
+    "\n",
+    "    Parâmetros:\n",
+    "        df (DataFrame): O DataFrame a ser verificado.\n",
+    "\n",
+    "    Retorna:\n",
+    "        False | DataFrame: False se não houver nulos; DataFrame com análise se houver.\n",
+    "    \"\"\"\n",
+    "    total_nulos = df.isnull().sum().sort_values(ascending=False)\n",
+    "    total_nulos = total_nulos[total_nulos > 0]\n",
+    "\n",
+    "    if total_nulos.empty:\n",
+    "        return False\n",
+    "\n",
+    "    total_nulos_percent = ((total_nulos / df.shape[0]) * 100).round(2)\n",
+    "    return pd.DataFrame({'Total Nulls': total_nulos, '%': total_nulos_percent})"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 184,
+   "id": "b855388b",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Total Nulls</th>\n",
+       "      <th>%</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>tipo_excepcionalidade</th>\n",
+       "      <td>23265</td>\n",
+       "      <td>99.07</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>cnpj_instituicao_financeira_credenciada</th>\n",
+       "      <td>19412</td>\n",
+       "      <td>82.66</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>nome_instituicao_financeira_credenciada</th>\n",
+       "      <td>19412</td>\n",
+       "      <td>82.66</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>id_municipio</th>\n",
+       "      <td>7721</td>\n",
+       "      <td>32.88</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>subclasse_cnae</th>\n",
+       "      <td>5507</td>\n",
+       "      <td>23.45</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>tipo_fonte_recursos</th>\n",
+       "      <td>836</td>\n",
+       "      <td>3.56</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>classe_cnae</th>\n",
+       "      <td>497</td>\n",
+       "      <td>2.12</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>situacao_contrato</th>\n",
+       "      <td>268</td>\n",
+       "      <td>1.14</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>grupo_cnae</th>\n",
+       "      <td>255</td>\n",
+       "      <td>1.09</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>cnpj_cliente</th>\n",
+       "      <td>9</td>\n",
+       "      <td>0.04</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                         Total Nulls      %\n",
+       "tipo_excepcionalidade                          23265  99.07\n",
+       "cnpj_instituicao_financeira_credenciada        19412  82.66\n",
+       "nome_instituicao_financeira_credenciada        19412  82.66\n",
+       "id_municipio                                    7721  32.88\n",
+       "subclasse_cnae                                  5507  23.45\n",
+       "tipo_fonte_recursos                              836   3.56\n",
+       "classe_cnae                                      497   2.12\n",
+       "situacao_contrato                                268   1.14\n",
+       "grupo_cnae                                       255   1.09\n",
+       "cnpj_cliente                                       9   0.04"
+      ]
+     },
+     "execution_count": 184,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "verificar_valores_nulos(operacoes)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 185,
+   "id": "b2784444",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "tipo_excepcionalidade\n",
+       "NaN                                                                                  23265\n",
+       "CONDIÇÕES DE CRÉDITO                                                                    81\n",
+       "CONDIÇÕES FINANCEIRAS E OPERACIONAIS                                                    68\n",
+       "COBRANÇA DE COMISSÕES                                                                   47\n",
+       "CONDIÇÕES FINANCEIRAS E OPERACIONAIS /CONDIÇÕES DE CRÉDITO                              17\n",
+       "GARANTIAS                                                                                3\n",
+       "CONDIÇÕES FINANCEIRAS E OPERACIONAIS /COBRANÇA DE COMISSÕES /CONDIÇÕES DE CRÉDITO        2\n",
+       "Name: count, dtype: int64"
+      ]
+     },
+     "execution_count": 185,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#categorias existentes na coluna tipo_excepcionalidade\n",
+    "operacoes[\"tipo_excepcionalidade\"].value_counts(dropna=False)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "180f04ee",
+   "metadata": {},
+   "source": [
+    "**Regra de negócio:** Se _tipo_excepcionalidade_\n",
+    " está nulo, significa que a operação seguiu o fluxo padrão (sem exceção). Então, podemos realizar a classificação 0 = não, e 1 = sim."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 186,
+   "id": "1f5df609",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#Criando uma nova coluna para indicar se a operação possui ou não excepcionalidade\n",
+    "operacoes[\"tem_excepcionalidade\"] = operacoes[\"tipo_excepcionalidade\"].notna().astype(int)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 187,
+   "id": "be992193",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "operacoes = operacoes.drop(columns=[\"tipo_excepcionalidade\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 188,
+   "id": "25975ef9",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "nome_instituicao_financeira_credenciada    19412\n",
+       "cnpj_instituicao_financeira_credenciada    19412\n",
+       "id_municipio                                7721\n",
+       "subclasse_cnae                              5507\n",
+       "tipo_fonte_recursos                          836\n",
+       "classe_cnae                                  497\n",
+       "situacao_contrato                            268\n",
+       "grupo_cnae                                   255\n",
+       "cnpj_cliente                                   9\n",
+       "id_contrato                                    0\n",
+       "dtype: int64"
+      ]
+     },
+     "execution_count": 188,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "operacoes.isnull().sum().sort_values(ascending=False).head(10)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "45970d5b",
+   "metadata": {},
+   "source": [
+    "**Regra de Négocio:** Se o CNPJ da instituição financeira credenciada estiver nulo, podemos entender que a operação foi realizada diretamente com o BNDES, sem intermediação de uma instituição financeira. Portanto, vamos preencher esses valores nulos com a string \"OPERAÇÃO DIRETA\"."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 189,
+   "id": "4dabff36",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "cnpj_instituicao_financeira_credenciada    object\n",
+      "dtype: object\n"
+     ]
+    }
+   ],
+   "source": [
+    "operacoes[\"cnpj_instituicao_financeira_credenciada\"] = operacoes[\"cnpj_instituicao_financeira_credenciada\"].fillna(\"0000000000000.0\")\n",
+    "operacoes[\"nome_instituicao_financeira_credenciada\"] = operacoes[\"nome_instituicao_financeira_credenciada\"].fillna(\"OPERAÇÃO DIRETA\")\n",
+    "print(f\"{operacoes[['cnpj_instituicao_financeira_credenciada']].dtypes}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 190,
+   "id": "9f41fa61",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "id_municipio           7721\n",
+       "subclasse_cnae         5507\n",
+       "tipo_fonte_recursos     836\n",
+       "classe_cnae             497\n",
+       "situacao_contrato       268\n",
+       "grupo_cnae              255\n",
+       "cnpj_cliente              9\n",
+       "id_contrato               0\n",
+       "nome_municipio            0\n",
+       "sigla_uf                  0\n",
+       "dtype: int64"
+      ]
+     },
+     "execution_count": 190,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Verficando colunas restantes para tratamento de valores nulos\n",
+    "operacoes.isnull().sum().sort_values(ascending=False).head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 191,
+   "id": "98e79cd6",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "cnpj_cliente    float64\n",
+      "dtype: object\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(f\"{operacoes[['cnpj_cliente']].dtypes}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 192,
+   "id": "0be65643",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#preenchendo os valores nulos\n",
+    "operacoes[\"id_municipio\"] = operacoes[\"id_municipio\"].fillna(\"NÃO INFORMADO\")\n",
+    "operacoes[\"cnpj_cliente\"] = operacoes[\"cnpj_cliente\"].fillna(\"000000000000.0\")\n",
+    "operacoes[\"situacao_contrato\"] = operacoes[\"situacao_contrato\"].fillna(\"OUTROS\")\n",
+    "operacoes[\"tipo_fonte_recursos\"] = operacoes[\"tipo_fonte_recursos\"].fillna(\"OUTROS\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 193,
+   "id": "64496037",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#removendo colunas cnae desnecessárias\n",
+    "operacoes = operacoes.drop(columns=[\"classe_cnae\",\"subclasse_cnae\",\"grupo_cnae\",\"divisao_cnae\",\"secao_cnae\"])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 194,
+   "id": "3b5ea1ef",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "False"
+      ]
+     },
+     "execution_count": 194,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "verificar_valores_nulos(operacoes)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "51b61579",
+   "metadata": {},
+   "source": [
+    "#### Validação dos tipos de dados e Enriquecimento"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 195,
+   "id": "18ff7b8c",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "razao_social_cliente                           str\n",
+       "cnpj_cliente                                object\n",
+       "descricao_projeto                              str\n",
+       "sigla_uf                                       str\n",
+       "nome_municipio                                 str\n",
+       "id_municipio                                object\n",
+       "id_contrato                                  int64\n",
+       "data_contratacao                               str\n",
+       "valor_contratado                           float64\n",
+       "valor_desembolsado                         float64\n",
+       "tipo_fonte_recursos                            str\n",
+       "custo_financeiro                               str\n",
+       "taxa_juros                                 float64\n",
+       "prazo_carencia                               int64\n",
+       "prazo_amortizacao                            int64\n",
+       "modalidade_apoio                               str\n",
+       "forma_apoio                                    str\n",
+       "produto                                        str\n",
+       "tipo_instrumento_financeiro                    str\n",
+       "indicador_inovacao                           int64\n",
+       "area_operacional_bndes                         str\n",
+       "setor_cnae_bndes                               str\n",
+       "subsetor_agrupado_cnae_bndes                   str\n",
+       "descricao_subclasse                            str\n",
+       "setor_bndes                                    str\n",
+       "subsetor_bndes                                 str\n",
+       "porte_cliente                                  str\n",
+       "natureza_cliente                               str\n",
+       "nome_instituicao_financeira_credenciada        str\n",
+       "cnpj_instituicao_financeira_credenciada     object\n",
+       "tipo_garantia                                  str\n",
+       "situacao_contrato                              str\n",
+       "data_apuracao                                  str\n",
+       "tem_excepcionalidade                         int64\n",
+       "dtype: object"
+      ]
+     },
+     "execution_count": 195,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Verificando os tipos de dados das colunas\n",
+    "operacoes.dtypes"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 196,
+   "id": "02476509",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "data_contratacao    str\n",
+       "data_apuracao       str\n",
+       "dtype: object"
+      ]
+     },
+     "execution_count": 196,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#consultando colunas de data\n",
+    "cols_data = [c for c in operacoes.columns if \"data\" in c]\n",
+    "cols_data\n",
+    "operacoes[cols_data].dtypes"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 197,
+   "id": "a14d24ca",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "data_contratacao    datetime64[us]\n",
+       "data_apuracao       datetime64[us]\n",
+       "dtype: object"
+      ]
+     },
+     "execution_count": 197,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Ajuste dos tipos de dados das colunas de data\n",
+    "operacoes[cols_data] = operacoes[cols_data].apply(pd.to_datetime, errors='coerce')\n",
+    "operacoes[cols_data].dtypes"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "88df5972",
+   "metadata": {},
+   "source": [
+    "### Limpeza e padronização de textos"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 198,
+   "id": "fef6aa38",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def normalize_text(value):\n",
+    "    if pd.isna(value):\n",
+    "        return value\n",
+    "    text = str(value).strip().upper()\n",
+    "    text = unicodedata.normalize(\"NFKD\", text)\n",
+    "    text = \"\".join(ch for ch in text if not unicodedata.combining(ch))\n",
+    "    text = re.sub(r\"\\s+\", \" \", text)\n",
+    "    return text"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 199,
+   "id": "c4148175",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def padronizar_texto(df, cols=None):\n",
+    "    df_limpo = df.copy()\n",
+    "    if cols is None:\n",
+    "        cols = df_limpo.select_dtypes(include=[\"object\", \"string\"]).columns\n",
+    "    for col in cols:\n",
+    "        df_limpo[col] = df_limpo[col].map(normalize_text)\n",
+    "    return df_limpo"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 200,
+   "id": "4589fd82",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "operacoes = padronizar_texto(operacoes)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "9557ded9",
+   "metadata": {},
+   "source": [
+    "### Feature Engineering"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 201,
+   "id": "8cf5584e",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "<ArrowStringArray>\n",
+      "['GRANDE', 'SEM PORTE', 'MEDIA', 'PEQUENA', 'MICRO']\n",
+      "Length: 5, dtype: str\n",
+      "<ArrowStringArray>\n",
+      "['REEMBOLSAVEL', 'NAO REEMBOLSAVEL']\n",
+      "Length: 2, dtype: str\n",
+      "<ArrowStringArray>\n",
+      "['INDIRETA', 'DIRETA']\n",
+      "Length: 2, dtype: str\n",
+      "<ArrowStringArray>\n",
+      "[                                         'PRIVADA',\n",
+      " 'ADMINISTRACAO PUBLICA DIRETA - GOVERNO MUNICIPAL',\n",
+      "  'ADMINISTRACAO PUBLICA DIRETA - GOVERNO ESTADUAL',\n",
+      "                                 'PUBLICA INDIRETA',\n",
+      "   'ADMINISTRACAO PUBLICA DIRETA - GOVERNO FEDERAL']\n",
+      "Length: 5, dtype: str\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(operacoes['porte_cliente'].unique())\n",
+    "print(operacoes['modalidade_apoio'].unique())\n",
+    "print(operacoes['forma_apoio'].unique())\n",
+    "print(operacoes['natureza_cliente'].unique())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 202,
+   "id": "0ce775be",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def aplicar_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:\n",
+    "    \"\"\"Aplica as transformações da camada Silver no DataFrame de operações do BNDES.\"\"\"\n",
+    "    \n",
+    "    # Cria uma cópia para preservar a base original\n",
+    "    df_out = df.copy()\n",
+    "\n",
+    "    # 1. Extração do ano e mês da data de contratação\n",
+    "    df_out[\"ano_contratacao\"] = df_out[\"data_contratacao\"].dt.year\n",
+    "    df_out[\"mes_contratacao\"] = df_out[\"data_contratacao\"].dt.month\n",
+    "\n",
+    "    # 2. Calculo do prazo total em meses\n",
+    "    df_out[\"prazo_total_meses\"] = df_out[\"prazo_carencia\"].fillna(0) + df_out[\n",
+    "        \"prazo_amortizacao\"\n",
+    "    ].fillna(0)\n",
+    "\n",
+    "    # 3. Categorização da taxa de juros\n",
+    "    condicoes_taxa = [\n",
+    "        df_out[\"taxa_juros\"] == 0,\n",
+    "        df_out[\"taxa_juros\"] < 5,\n",
+    "        (df_out[\"taxa_juros\"] >= 5) & (df_out[\"taxa_juros\"] <= 10),\n",
+    "        df_out[\"taxa_juros\"] > 10,\n",
+    "    ]\n",
+    "    categorias_taxa = [\"SEM TAXA\", \"BAIXA\", \"MEDIA\", \"ALTA\"]\n",
+    "\n",
+    "    df_out[\"grupo_taxa_juros\"] = np.select(\n",
+    "        condicoes_taxa, categorias_taxa, default=\"SEM TAXA\"\n",
+    "    )\n",
+    "\n",
+    "    # 6. Codificação ordinal da taxa de juros\n",
+    "    mapa_taxa ={\n",
+    "        \"SEM TAXA\": 0,\n",
+    "        \"BAIXA\": 1,\n",
+    "        \"MEDIA\": 2,\n",
+    "        \"ALTA\": 3\n",
+    "    }\n",
+    "    df_out[\"grupo_taxa_juros_ordinal\"] = df_out[\"grupo_taxa_juros\"].map(mapa_taxa)\n",
+    "\n",
+    "    # 4. Flags binárias\n",
+    "    df_out[\"flag_apoio_direto\"] = (df_out[\"forma_apoio\"] == \"DIRETA\").astype(int)\n",
+    "    df_out[\"flag_reembolsavel\"] = (df_out[\"modalidade_apoio\"] == \"REEMBOLSAVEL\").astype(int)\n",
+    "    df_out[\"flag_cliente_publico\"] = (df_out[\"natureza_cliente\"].fillna(\"\").str.contains(\"PUBLICA|PUBLICO\", regex=True).astype(int))\n",
+    "\n",
+    "    # 5. Quantidade de palavras da descrição\n",
+    "    df_out[\"qtd_palavras_descricao\"] = (\n",
+    "        df_out[\"descricao_projeto\"].fillna(\"\").str.split().str.len()\n",
+    "    )\n",
+    "\n",
+    "    # 6. Codificação ordinal do porte do cliente\n",
+    "    mapa_porte = {\n",
+    "        \"SEM PORTE\": 0,\n",
+    "        \"MICRO\": 1,\n",
+    "        \"PEQUENA\": 2,\n",
+    "        \"MEDIA\": 3,\n",
+    "        \"GRANDE\": 4,\n",
+    "    }\n",
+    "    df_out[\"porte_cliente_ordinal\"] = (df_out[\"porte_cliente\"].map(mapa_porte))\n",
+    "\n",
+    "    return df_out"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 209,
+   "id": "9b165db4",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>razao_social_cliente</th>\n",
+       "      <th>cnpj_cliente</th>\n",
+       "      <th>descricao_projeto</th>\n",
+       "      <th>sigla_uf</th>\n",
+       "      <th>nome_municipio</th>\n",
+       "      <th>id_municipio</th>\n",
+       "      <th>id_contrato</th>\n",
+       "      <th>data_contratacao</th>\n",
+       "      <th>valor_contratado</th>\n",
+       "      <th>valor_desembolsado</th>\n",
+       "      <th>...</th>\n",
+       "      <th>ano_contratacao</th>\n",
+       "      <th>mes_contratacao</th>\n",
+       "      <th>prazo_total_meses</th>\n",
+       "      <th>grupo_taxa_juros</th>\n",
+       "      <th>grupo_taxa_juros_ordinal</th>\n",
+       "      <th>flag_apoio_direto</th>\n",
+       "      <th>flag_reembolsavel</th>\n",
+       "      <th>flag_cliente_publico</th>\n",
+       "      <th>qtd_palavras_descricao</th>\n",
+       "      <th>porte_cliente_ordinal</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>COPACOL-COOPERATIVA AGROINDUSTRIAL CONSOLATA</td>\n",
+       "      <td>76093731000190.0</td>\n",
+       "      <td>INVESTIMENTOS EM AMPLIACAO DA CAPACIDADE DE RE...</td>\n",
+       "      <td>PR</td>\n",
+       "      <td>SEM MUNICIPIO</td>\n",
+       "      <td>NAO INFORMADO</td>\n",
+       "      <td>9203361</td>\n",
+       "      <td>2009-06-30</td>\n",
+       "      <td>35900000.0</td>\n",
+       "      <td>35900000.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2009</td>\n",
+       "      <td>6</td>\n",
+       "      <td>108</td>\n",
+       "      <td>MEDIA</td>\n",
+       "      <td>2</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>44</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>LAR COOPERATIVA AGROINDUSTRIAL</td>\n",
+       "      <td>77752293000198.0</td>\n",
+       "      <td>DIRETA - AMPLICACAO DE LINHA DE ABATE DE FRANG...</td>\n",
+       "      <td>PR</td>\n",
+       "      <td>MATELANDIA</td>\n",
+       "      <td>4115606.0</td>\n",
+       "      <td>9203571</td>\n",
+       "      <td>2009-06-29</td>\n",
+       "      <td>66998000.0</td>\n",
+       "      <td>66998000.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2009</td>\n",
+       "      <td>6</td>\n",
+       "      <td>108</td>\n",
+       "      <td>MEDIA</td>\n",
+       "      <td>2</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>24</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>LAR COOPERATIVA AGROINDUSTRIAL</td>\n",
+       "      <td>77752293000198.0</td>\n",
+       "      <td>DIRETA - AMPLICACAO DE LINHA DE ABATE DE FRANG...</td>\n",
+       "      <td>MS</td>\n",
+       "      <td>SEM MUNICIPIO</td>\n",
+       "      <td>NAO INFORMADO</td>\n",
+       "      <td>9203581</td>\n",
+       "      <td>2009-06-30</td>\n",
+       "      <td>20897000.0</td>\n",
+       "      <td>20897000.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2009</td>\n",
+       "      <td>6</td>\n",
+       "      <td>108</td>\n",
+       "      <td>MEDIA</td>\n",
+       "      <td>2</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>24</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>COCARI - COOPERATIVA AGROPECUARIA E INDUSTRIAL</td>\n",
+       "      <td>78956968000183.0</td>\n",
+       "      <td>SUPLEMENTACAO DE RECURSOS A IMPLANTACAO DE UM ...</td>\n",
+       "      <td>PR</td>\n",
+       "      <td>MANDAGUARI</td>\n",
+       "      <td>4114203.0</td>\n",
+       "      <td>9204441</td>\n",
+       "      <td>2009-06-30</td>\n",
+       "      <td>37000000.0</td>\n",
+       "      <td>37000000.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2009</td>\n",
+       "      <td>6</td>\n",
+       "      <td>120</td>\n",
+       "      <td>MEDIA</td>\n",
+       "      <td>2</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>45</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>COCARI - COOPERATIVA AGROPECUARIA E INDUSTRIAL</td>\n",
+       "      <td>78956968000183.0</td>\n",
+       "      <td>SUPLEMENTACAO DE RECURSOS A IMPLANTACAO DE UM ...</td>\n",
+       "      <td>PR</td>\n",
+       "      <td>MANDAGUARI</td>\n",
+       "      <td>4114203.0</td>\n",
+       "      <td>9204451</td>\n",
+       "      <td>2009-10-09</td>\n",
+       "      <td>50000000.0</td>\n",
+       "      <td>50000000.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2009</td>\n",
+       "      <td>10</td>\n",
+       "      <td>120</td>\n",
+       "      <td>MEDIA</td>\n",
+       "      <td>2</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>45</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "<p>5 rows × 44 columns</p>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                             razao_social_cliente      cnpj_cliente  \\\n",
+       "0    COPACOL-COOPERATIVA AGROINDUSTRIAL CONSOLATA  76093731000190.0   \n",
+       "1                  LAR COOPERATIVA AGROINDUSTRIAL  77752293000198.0   \n",
+       "2                  LAR COOPERATIVA AGROINDUSTRIAL  77752293000198.0   \n",
+       "3  COCARI - COOPERATIVA AGROPECUARIA E INDUSTRIAL  78956968000183.0   \n",
+       "4  COCARI - COOPERATIVA AGROPECUARIA E INDUSTRIAL  78956968000183.0   \n",
+       "\n",
+       "                                   descricao_projeto sigla_uf nome_municipio  \\\n",
+       "0  INVESTIMENTOS EM AMPLIACAO DA CAPACIDADE DE RE...       PR  SEM MUNICIPIO   \n",
+       "1  DIRETA - AMPLICACAO DE LINHA DE ABATE DE FRANG...       PR     MATELANDIA   \n",
+       "2  DIRETA - AMPLICACAO DE LINHA DE ABATE DE FRANG...       MS  SEM MUNICIPIO   \n",
+       "3  SUPLEMENTACAO DE RECURSOS A IMPLANTACAO DE UM ...       PR     MANDAGUARI   \n",
+       "4  SUPLEMENTACAO DE RECURSOS A IMPLANTACAO DE UM ...       PR     MANDAGUARI   \n",
+       "\n",
+       "    id_municipio  id_contrato data_contratacao  valor_contratado  \\\n",
+       "0  NAO INFORMADO      9203361       2009-06-30        35900000.0   \n",
+       "1      4115606.0      9203571       2009-06-29        66998000.0   \n",
+       "2  NAO INFORMADO      9203581       2009-06-30        20897000.0   \n",
+       "3      4114203.0      9204441       2009-06-30        37000000.0   \n",
+       "4      4114203.0      9204451       2009-10-09        50000000.0   \n",
+       "\n",
+       "   valor_desembolsado  ... ano_contratacao mes_contratacao  prazo_total_meses  \\\n",
+       "0          35900000.0  ...            2009               6                108   \n",
+       "1          66998000.0  ...            2009               6                108   \n",
+       "2          20897000.0  ...            2009               6                108   \n",
+       "3          37000000.0  ...            2009               6                120   \n",
+       "4          50000000.0  ...            2009              10                120   \n",
+       "\n",
+       "   grupo_taxa_juros  grupo_taxa_juros_ordinal flag_apoio_direto  \\\n",
+       "0             MEDIA                         2                 0   \n",
+       "1             MEDIA                         2                 1   \n",
+       "2             MEDIA                         2                 0   \n",
+       "3             MEDIA                         2                 0   \n",
+       "4             MEDIA                         2                 0   \n",
+       "\n",
+       "  flag_reembolsavel flag_cliente_publico qtd_palavras_descricao  \\\n",
+       "0                 1                    0                     44   \n",
+       "1                 1                    0                     24   \n",
+       "2                 1                    0                     24   \n",
+       "3                 1                    0                     45   \n",
+       "4                 1                    0                     45   \n",
+       "\n",
+       "   porte_cliente_ordinal  \n",
+       "0                      4  \n",
+       "1                      4  \n",
+       "2                      4  \n",
+       "3                      4  \n",
+       "4                      4  \n",
+       "\n",
+       "[5 rows x 44 columns]"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "operacoes = aplicar_feature_engineering(operacoes)\n",
+    "display(operacoes.head())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d5abc2e3",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "forma_apoio\n",
+      "DIRETA      1\n",
+      "INDIRETA    0\n",
+      "Name: flag_apoio_direto, dtype: int64\n",
+      "modalidade_apoio\n",
+      "NAO REEMBOLSAVEL    0\n",
+      "REEMBOLSAVEL        1\n",
+      "Name: flag_reembolsavel, dtype: int64\n",
+      "natureza_cliente\n",
+      "ADMINISTRACAO PUBLICA DIRETA - GOVERNO ESTADUAL     1\n",
+      "ADMINISTRACAO PUBLICA DIRETA - GOVERNO FEDERAL      1\n",
+      "ADMINISTRACAO PUBLICA DIRETA - GOVERNO MUNICIPAL    1\n",
+      "PRIVADA                                             0\n",
+      "PUBLICA INDIRETA                                    1\n",
+      "Name: flag_cliente_publico, dtype: int64\n",
+      "porte_cliente\n",
+      "GRANDE       4\n",
+      "MEDIA        3\n",
+      "MICRO        1\n",
+      "PEQUENA      2\n",
+      "SEM PORTE    0\n",
+      "Name: porte_cliente_ordinal, dtype: int64\n",
+      "grupo_taxa_juros\n",
+      "ALTA        3\n",
+      "BAIXA       1\n",
+      "MEDIA       2\n",
+      "SEM TAXA    0\n",
+      "Name: grupo_taxa_juros_ordinal, dtype: int64\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Verificando os valores únicos das colunas categóricas e suas flags correspondentes\n",
+    "print(operacoes.groupby(\"forma_apoio\")[\"flag_apoio_direto\"].first())\n",
+    "print(operacoes.groupby(\"modalidade_apoio\")[\"flag_reembolsavel\"].first())\n",
+    "print(operacoes.groupby(\"natureza_cliente\")[\"flag_cliente_publico\"].first())\n",
+    "print(operacoes.groupby(\"porte_cliente\")[\"porte_cliente_ordinal\"].first())\n",
+    "print(operacoes.groupby(\"grupo_taxa_juros\")[\"grupo_taxa_juros_ordinal\"].first())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 205,
+   "id": "0021ecd4",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "valor_contratado      1,229,184,483,691.93\n",
+       "valor_desembolsado      952,046,450,761.74\n",
+       "dtype: str"
+      ]
+     },
+     "execution_count": 205,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "silver_operacoes = operacoes.copy()\n",
+    "\n",
+    "total = silver_operacoes[[\"valor_contratado\", \"valor_desembolsado\"]].sum().round(2)\n",
+    "total_silver= total.apply(lambda x: f\"{x:,.2f}\")\n",
+    "total_silver"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 206,
+   "id": "dd09d026",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Ler os dados brutos\n",
+    "raw = pd.read_csv(\n",
+    "    os.path.join(BRONZE_DIR, 'br_bndes_operacoes_contratadas_operacoes_nao_automaticas.csv'),\n",
+    "    dtype=str\n",
+    ")\n",
+    "\n",
+    "cols = [\"valor_contratado\", \"valor_desembolsado\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 207,
+   "id": "859e968e",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "valor_contratado      1,229,184,483,691.93\n",
+       "valor_desembolsado      952,046,450,761.74\n",
+       "dtype: str"
+      ]
+     },
+     "execution_count": 207,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "total = raw[cols].apply(pd.to_numeric, errors=\"coerce\").sum().round(2)\n",
+    "\n",
+    "total_raw = total.apply(lambda x: f\"{x:,.2f}\")\n",
+    "total_raw"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.14.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
