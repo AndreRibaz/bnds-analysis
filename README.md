@@ -30,7 +30,7 @@ z
 
 - **i. Entender e preparar os dados:**  consolidar as camadas raw e silver, validar o dicionário de dados, tratar duplicidades por id_contrato, valores ausentes, inconsistências, outliers e categorias com baixa frequência. Realizar análise descritiva: aplicar frequências, histogramas, tabelas de frequência, média, mediana, quartis, percentis e desvio padrão para caracterizar valor_operacao, prazos, taxas, portes, setores e UFs.
     
-- **ii. Aplicar regressão: ** estimar modelos de regressão linear simples, múltipla e polinomial, com avaliação de R², resíduos e coeficientes. Construir e avaliar o modelo preditivo: usar apenas variáveis disponíveis até a contratação, com separação temporal treino/teste, comparando baseline e modelos de regressão. Avaliar desempenho e riscos: medir MAE, RMSE, R² e erro por segmento; analisar resíduos; verificar estabilidade temporal; documentar limitações.
+- **ii. Aplicar regressão:** estimar modelos de regressão linear simples, múltipla e polinomial, com avaliação de R², resíduos e coeficientes. Construir e avaliar o modelo preditivo: usar apenas variáveis disponíveis até a contratação, com separação temporal treino/teste, comparando baseline e modelos de regressão. Avaliar desempenho e riscos: medir MAE, RMSE, R² e erro por segmento; analisar resíduos; verificar estabilidade temporal; documentar limitações.
     
 - **iii. Interpretar Previsões e Importância das Variáveis:** Aplicar técnicas de explicabilidade para identificar quais atributos (porte da empresa, setor ou localização) exercem maior influência no valor contratado estimado. entregar relatório com recomendações para planejamento de liquidez, alocação de capital e detecção de operações fora do padrão.
     
