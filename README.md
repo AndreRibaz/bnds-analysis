@@ -1,4 +1,3 @@
-# Contexto da base de dados
 Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empresas e órgãos públicos no Brasil. Ela mostra quem pediu o recurso (nome_cliente), onde o projeto será feito (sigla_uf) e para qual setor ele se destina (setor_bndes). Além disso, compara o total aprovado no papel (valor_operacao) com o dinheiro que já foi de fato entregue (valor_desembolsado). Na prática, funciona como um extrato transparente para acompanhar onde o dinheiro do banco está sendo investido.
 
 - Base de Operações Não Automática: Concentra grandes projetos de infraestrutura, expansões industriais, financiamentos estruturados e operações estratégicas.
@@ -8,13 +7,13 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 # 1. Problema de negócio e objetivo do projeto
 
 ## 1.1 Qual é o problema de negócio?
-
+z
 - Um gestor financeiro do BNDES precisa melhorar o planejamento da demanda de crédito e a alocação de capital para operações não automáticas. Ele se beneficiaria muito se pudesse prever o valor total contratado (`valor_contratado`) de novos projetos com base no perfil do cliente, localização geográfica e termos do contrato, permitindo otimizar a gestão de liquidez, avaliar riscos e identificar antecipadamente solicitações de crédito fora do padrão.
     
 
 ## 1.2 Qual é o contexto?
 
-- Quando um banco de desenvolvimento como o BNDES aloca capital para operações financeiras não automáticas, três Indicadores-Chave de Desempenho (KPIs) essenciais devem ser considerados:
+- A base reúne o histórico de financiamentos concedidos pelo BNDES a empresas e órgãos públicos no Brasil. Ela contém:
     
     - **i. Eficiência na Alocação de Capital:** Mede o quão efetivamente os recursos financeiros são distribuídos entre setores e regiões para impulsionar o desenvolvimento econômico sem gerar gargalos de liquidez.
         
@@ -29,11 +28,11 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 
 ## 2.1 Quais são os objetivos específicos do projeto?
 
-- **i. Construir um Pipeline de Engenharia de Recursos (_Feature Engineering_):** Transformar dados brutos tratando a assimetria financeira (transformação logarítmica), codificando variáveis categóricas de alta cardinalidade (CNAE/localizações) e criando variáveis derivadas do domínio (ex: razão entre carência e amortização).
+- **i. Entender e preparar os dados:**  consolidar as camadas raw e silver, validar o dicionário de dados, tratar duplicidades por id_contrato, valores ausentes, inconsistências, outliers e categorias com baixa frequência. Realizar análise descritiva: aplicar frequências, histogramas, tabelas de frequência, média, mediana, quartis, percentis e desvio padrão para caracterizar valor_operacao, prazos, taxas, portes, setores e UFs.
     
-- **ii. Treinar e Comparar Modelos de Regressão:** Construir e avaliar modelos lineares baseline (Ridge/Lasso) contra algoritmos baseados em árvores (Random Forest/LightGBM) utilizando métricas de avaliação como $MAE$, $RMSE$ e $R^2$.
+- **ii. Aplicar regressão: ** estimar modelos de regressão linear simples, múltipla e polinomial, com avaliação de R², resíduos e coeficientes. Construir e avaliar o modelo preditivo: usar apenas variáveis disponíveis até a contratação, com separação temporal treino/teste, comparando baseline e modelos de regressão. Avaliar desempenho e riscos: medir MAE, RMSE, R² e erro por segmento; analisar resíduos; verificar estabilidade temporal; documentar limitações.
     
-- **iii. Interpretar Previsões e Importância das Variáveis:** Aplicar técnicas de explicabilidade para identificar quais atributos (porte da empresa, setor ou localização) exercem maior influência no valor contratado estimado.
+- **iii. Interpretar Previsões e Importância das Variáveis:** Aplicar técnicas de explicabilidade para identificar quais atributos (porte da empresa, setor ou localização) exercem maior influência no valor contratado estimado. entregar relatório com recomendações para planejamento de liquidez, alocação de capital e detecção de operações fora do padrão.
     
 
 ## 2.2 Metadados e Fontes de Dados
@@ -51,45 +50,3 @@ Esta base reúne o histórico de financiamentos concedidos pelo BNDES para empre
 - **Cobertura Temporal:** Janeiro de 2002 – Junho de 2026
     
 - **Licença dos Dados:** Dados Abertos / Domínio Público (Lei de Acesso à Informação)
-
-
-  
-    
-    
-| Entrada                      | Feature Engineering                        | Saída                      |
-| ---------------------------- | ------------------------------------------ | -------------------------- |
-| valor_contratado             | Transformação Logarítmica (log1p)          | y_log                      |
-| prazo_carencia, prazo_amort  | Razão de Carência (carencia / prazo_total) | feature_proporcao_carencia |
-| subclasse_cnae, id_municipio | Target Encoding / Aggregation por Setor    | feature_setor_media_valor  |
-| data_contratacao             | Extração Temporal (Ano, Mês, Ciclo)        | features_temporais         |
-
-
-
-1. **Modelagem de Regressão:** Treinar e comparar um modelo baseline (Regressão Ridge/Lasso) contra um modelo de árvores (Random Forest/LightGBM), avaliando por $MAE$, $RMSE$ e $R^2$.
-    
-2. **Explicabilidade:** Mapear e interpretar a importância de cada variável na estimativa do crédito. (Inferência) Se f^ é uma estimativa de f podemos responder as seguintes perguntas sobre f: quais features são as mais importantes? há evidencias que f é linear?
-
-
-
-prompt
-
-Contexto do projeto academico:
-- Um gestor financeiro do BNDES precisa melhorar o planejamento da demanda de crédito e a alocação de capital para operações não automáticas. Ele se beneficiaria muito se pudesse prever o valor total contratado (`valor_contratado`) de novos projetos com base no perfil do cliente, localização geográfica e termos do contrato, permitindo otimizar a gestão de liquidez, avaliar riscos e identificar antecipadamente solicitações de crédito fora do padrão.
-
-1. Análise Exploratória de Dados (EDA) utilizando fundamentos da estátistica descritiva, vamos resumir as principais características de um conjunto de dados.
-- Decidir que metodo utilizar na base metodo paramétricos ou não-parametricos
--verificar p-value
--verificar IC
--verificar destribuição dos dados
--verificar correlações
--R-squared
-- Least Squares 
--IQR e Mediana
--MAD e STD uma analise para o conjunto dos dados
-
-2. Explicabilidade Mapear e interpretar a importância de cada variável na estimativa do crédito. (Inferência) Se f^ é uma estimativa de f podemos responder as seguintes perguntas sobre f: quais features são as mais importantes? há evidencias que f é linear?
-
-utilizando um arquivo .ipynb.
-
-Vamos iniciar realizando uma simples e consistente EDA.
-
